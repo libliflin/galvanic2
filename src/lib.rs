@@ -12,4 +12,6 @@
 //!
 //! See `.lathe/skills/architecture.md` for the full target shape.
 
+pub mod ast;
 pub mod lexer;
+pub mod parser;
