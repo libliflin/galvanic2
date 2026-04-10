@@ -3,11 +3,16 @@ name: Auto-close PRs
 # This repository does not accept pull requests. All changes are pushed
 # directly to main as signed commits by the maintainer.
 #
-# SECURITY: This workflow uses pull_request_target, which runs in the context
-# of the base repository with access to write tokens. It MUST NOT check out
-# the PR head or execute any code from the PR. It only calls the GitHub API
-# to comment, close, and lock the PR. PR-controlled values are passed as
-# JavaScript objects via github-script, never interpolated into a shell.
+# SECURITY:
+# - This workflow uses pull_request_target, which runs in the context of
+#   the base repository with access to write tokens. It MUST NOT check
+#   out the PR head or execute any code from the PR.
+# - PR-controlled values (number, head.sha) are passed as env vars, never
+#   interpolated into the shell script body. Free-text PR fields (title,
+#   body, branch name, author name) are never read by this workflow.
+# - Uses only preinstalled tools (gh, bash). No third-party actions, so
+#   the "Allow libliflin actions" repo setting cannot block this workflow
+#   and there is no third-party supply chain to worry about.
 
 on:
   pull_request_target:
@@ -22,74 +27,51 @@ jobs:
   close:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            const pr = context.payload.pull_request;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: pr.number,
-              body: 'This repository does not accept pull requests. All changes are pushed directly to `main` as signed commits by the maintainer. Closed and locked automatically.'
-            });
-            await github.rest.pulls.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pr.number,
-              state: 'closed'
-            });
-            await github.rest.issues.lock({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: pr.number,
-              lock_reason: 'off-topic'
-            });
+      - name: Close, lock, and clean up PR-spawned workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SELF_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
 
-            // Delete any workflow run records spawned by this PR's head SHA.
-            // These records contain attacker-controlled metadata fields
-            // (workflow name, branch name, commit message, run display title)
-            // that would be visible in `actions/runs` API queries until
-            // deleted. Lathe and any other agent reading run metadata
-            // must never see them. Defense in depth — the structural fix
-            // is that lathe queries commit-scoped check-runs, never the
-            // actions/runs endpoint.
-            //
-            // We never delete the close-prs run itself (this very run);
-            // we filter to runs whose head_sha matches the PR head and
-            // whose id is not our own run id.
-            const headSha = pr.head.sha;
-            const selfRunId = context.runId;
-            const runs = await github.paginate(
-              github.rest.actions.listWorkflowRunsForRepo,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                head_sha: headSha,
-                per_page: 100,
-              }
-            );
-            for (const run of runs) {
-              if (run.id === selfRunId) continue;
-              try {
-                await github.rest.actions.deleteWorkflowRun({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  run_id: run.id,
-                });
-                core.info(`Deleted workflow run ${run.id} (${run.name})`);
-              } catch (e) {
-                // If a run is still in progress, deletion can fail; cancel
-                // it first, then deletion will succeed on a later pass.
-                core.warning(`Could not delete run ${run.id}: ${e.message}`);
-                try {
-                  await github.rest.actions.cancelWorkflowRun({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    run_id: run.id,
-                  });
-                  core.info(`Cancelled workflow run ${run.id}`);
-                } catch (e2) {
-                  core.warning(`Could not cancel run ${run.id}: ${e2.message}`);
-                }
-              }
-            }
+          # Comment, close, lock. PR_NUMBER is a server-generated integer.
+          gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            -f body='This repository does not accept pull requests. All changes are pushed directly to `main` as signed commits by the maintainer. Closed and locked automatically.'
+
+          gh api -X PATCH "repos/${REPO}/pulls/${PR_NUMBER}" \
+            -f state=closed
+
+          gh api -X PUT "repos/${REPO}/issues/${PR_NUMBER}/lock" \
+            -f lock_reason=off-topic
+
+          # Delete any workflow run records spawned by this PR's head SHA.
+          # These records contain attacker-controlled metadata fields
+          # (workflow name, branch name, commit message, run display title)
+          # that would be visible in `actions/runs` API queries until
+          # deleted. Lathe and any other agent reading run metadata must
+          # never see them. Defense in depth — the structural fix is that
+          # lathe queries commit-scoped check-runs, never actions/runs.
+          #
+          # We never delete this run itself; we filter by SELF_RUN_ID.
+          # PR_HEAD_SHA is a server-validated 40-char hex.
+          run_ids=$(gh api "repos/${REPO}/actions/runs?head_sha=${PR_HEAD_SHA}&per_page=100" \
+            --jq '.workflow_runs[].id' || echo "")
+
+          for run_id in $run_ids; do
+            if [ "$run_id" = "$SELF_RUN_ID" ]; then
+              continue
+            fi
+            if gh api -X DELETE "repos/${REPO}/actions/runs/${run_id}" 2>/dev/null; then
+              echo "Deleted workflow run ${run_id}"
+            else
+              # In-progress runs cannot be deleted directly; cancel first.
+              if gh api -X POST "repos/${REPO}/actions/runs/${run_id}/cancel" 2>/dev/null; then
+                echo "Cancelled workflow run ${run_id}"
+              else
+                echo "::warning::Could not delete or cancel workflow run ${run_id}"
+              fi
+            fi
+          done

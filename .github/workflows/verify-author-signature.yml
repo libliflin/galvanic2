@@ -8,6 +8,9 @@ name: Verify author signature
 # The author key is hardcoded here, not read from a file in the repo, so
 # it cannot be modified by anything except a signed commit changing this
 # file (which itself goes through this same check on the next push).
+#
+# Uses only preinstalled tools (git, bash). No third-party actions, so
+# the "Allow libliflin actions" repo setting cannot block this workflow.
 
 on:
   push:
@@ -21,12 +24,10 @@ jobs:
     name: All commits signed by author key
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
-
-      - name: Verify all pushed commits
+      - name: Clone main and verify all pushed commits
         env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           BEFORE_SHA: ${{ github.event.before }}
           AFTER_SHA: ${{ github.event.after }}
           AUTHOR_KEY: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJxNEEmGq5ScUmRi/mQcsKWutXLIebGcuy4BJOe2/3Nv william.laffin@gmail.com"
@@ -34,16 +35,23 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Clone via the runner-issued GITHUB_TOKEN. REPO is the repo
+          # full_name set by GitHub, never attacker-controlled.
+          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" repo
+          cd repo
+
           ALLOWED_SIGNERS="$(mktemp)"
           printf '%s %s\n' "$AUTHOR_PRINCIPAL" "$AUTHOR_KEY" > "$ALLOWED_SIGNERS"
 
           git config gpg.format ssh
           git config gpg.ssh.allowedSignersFile "$ALLOWED_SIGNERS"
 
+          # Determine the commit range. BEFORE_SHA / AFTER_SHA are
+          # server-generated 40-char hex from the push event payload.
           if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
             COMMITS="$AFTER_SHA"
           else
-            COMMITS="$(git log --format=%H "$BEFORE_SHA..$AFTER_SHA")"
+            COMMITS="$(git log --format=%H "${BEFORE_SHA}..${AFTER_SHA}")"
           fi
 
           if [ -z "$COMMITS" ]; then
