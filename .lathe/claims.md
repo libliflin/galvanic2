@@ -62,6 +62,15 @@ Claims are the load-bearing promises galvanic makes to its stakeholders. The fal
 
 ---
 
+### Claim 7: Lathe CI-status reads are scoped and structured
+
+**Stakeholders:** All — this is a prompt-injection containment claim for the autonomous agent.  
+**Promise:** The lathe engine never reads workflow-run-scoped GitHub Actions data. It reads CI status only via commit-scoped check-runs/status endpoints (`/commits/<sha>/check-runs`, `/commits/<sha>/status`) for SHAs it has obtained from the protected `main` branch, and it consumes only structured fields (`status`, `conclusion`, `name`, `head_sha`, `started_at`, `completed_at`). It never reads `output.title`, `output.summary`, `output.text`, `pull_requests`, or any field from `actions/runs`, `gh run list`, `gh run view`, or search endpoints.  
+**Why it's load-bearing:** The lathe runtime is an LLM agent. Workflow run records on a public repo include attacker-controllable string fields whenever a fork PR is opened (workflow `name`, `display_title`, commit message, branch name). Reading those fields inside the agent loop is a prompt injection vector — the breach is not the workflow running, it is the agent reading attacker text from a "trusted" API response. The repo's lockdown (auto-close PRs, require approval for fork-PR workflows, restrict allowed actions to libliflin) reduces the surface but does not eliminate the existence of attacker-controlled run records during the brief window before `close-prs.yml` deletes them. The structural fix lives in lathe: never query the unsafe endpoints, never read the unsafe fields. See `agent.md` § "Reading CI status safely — load-bearing rule".  
+**How it's checked:** `falsify.sh` greps the lathe engine source for forbidden references (`actions/runs`, `gh run list`, `gh run view`, `gh run watch`, `output.summary`, `output.text`, `pull_requests`, `/search/`) and fails if any are found outside an explicit allowlist. Documentary backstop: greps `agent.md` for the load-bearing rule heading.
+
+---
+
 ## Retired Claims
 
 *(None yet. Claims are retired here when they no longer fit the project, with the date and reasoning.)*
