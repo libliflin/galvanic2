@@ -109,18 +109,69 @@ else
   fi
 fi
 
+# ── Claim 4: Build workflow runs on push to main and uses no third-party actions ──
+#
+# .github/workflows/build.yml must:
+#   (a) exist
+#   (b) be triggered on push to branches: [main]
+#   (c) declare a job named `build` (the check name lathe polls in direct mode)
+#   (d) contain no `uses:` lines (no third-party actions, matching the
+#       convention from close-prs.yml and verify-author-signature.yml)
+#
+# If any of these break, the lathe loop loses its CI signal — it pushes,
+# polls /commits/<sha>/check-runs filtered to name == "build", and gets
+# nothing back. The agent then has no way to know whether main is healthy.
+
+echo "Claim 4: Build workflow integrity"
+
+BUILD_WF="$REPO_ROOT/.github/workflows/build.yml"
+if [[ ! -f "$BUILD_WF" ]]; then
+  fail "build.yml does not exist at $BUILD_WF"
+else
+  ok "build.yml exists"
+
+  # (b) Push trigger on main. Match a `push:` block followed (within a few
+  # lines) by `branches:` containing `main`. We can't fully parse YAML in
+  # bash, so this is a structural grep — close enough for the documentary
+  # backstop, and the agent must keep the file straightforward.
+  if awk '
+    /^on:/                {in_on=1; next}
+    in_on && /^[a-z]/     {in_on=0}
+    in_on && /push:/      {in_push=1; next}
+    in_push && /branches:/{print; exit}
+  ' "$BUILD_WF" | grep -q 'main'; then
+    ok "build.yml triggers on push to main"
+  else
+    fail "build.yml does not trigger on push to branches: [main]"
+  fi
+
+  # (c) Job named `build`. The job key must be exactly `build:` at indent 2.
+  if grep -q '^  build:' "$BUILD_WF" 2>/dev/null; then
+    ok "build.yml declares a job named 'build'"
+  else
+    fail "build.yml is missing a job named 'build' (lathe polls check name 'build')"
+  fi
+
+  # (d) No third-party actions. The convention is to clone via GH_TOKEN.
+  if grep -nE '^[[:space:]]*-?[[:space:]]*uses:' "$BUILD_WF" 2>/dev/null; then
+    fail "build.yml contains 'uses:' lines — third-party actions are not permitted in this repo"
+  else
+    ok "build.yml uses no third-party actions"
+  fi
+fi
+
 # ── Pending claims (not yet active) ─────────────────────────────────────────
 #
 # The following claims from claims.md have no checks yet because the source
 # code doesn't exist. They are listed here as comments so the runtime agent
 # knows what to add as the project grows.
 #
-# Pending Claim 4: cargo build succeeds (activate when Cargo.toml + src/lib.rs exist)
-# Pending Claim 5: cargo test passes (activate when tests/ exists)
-# Pending Claim 6: size_of::<Token>() == 8 (activate when src/lexer.rs has Token)
-# Pending Claim 7: no unsafe in src/ (activate when src/ has library code)
-# Pending Claim 8: runtime_add_emits_add_instruction (activate when tests/e2e.rs has the test)
-# Pending Claim 9: CLI handles adversarial inputs (activate when galvanic binary exists)
+# Pending Claim 5:  cargo build succeeds (activate when Cargo.toml + src/lib.rs exist)
+# Pending Claim 6:  cargo test passes (activate when tests/ exists)
+# Pending Claim 7:  size_of::<Token>() == 8 (activate when src/lexer.rs has Token)
+# Pending Claim 8:  no unsafe in src/ (activate when src/ has library code)
+# Pending Claim 9:  runtime_add_emits_add_instruction (activate when tests/e2e.rs has the test)
+# Pending Claim 10: CLI handles adversarial inputs (activate when galvanic binary exists)
 #
 # To activate a pending claim:
 #   1. Move it from "Pending Claims" to "Active Claims" in claims.md

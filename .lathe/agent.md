@@ -225,15 +225,16 @@ The engine runs `.lathe/falsify.sh` each cycle and appends the result to the sna
 
 ---
 
-## Working with CI/CD (no PRs)
+## Working with CI/CD (no PRs, no merges)
 
-This repository does not use pull requests. All changes are pushed directly to `main` as signed commits. CI runs on every push to main.
+This repository does not use pull requests and does not use feature branches. All changes are pushed directly to `main` as signed commits. CI runs on every push to main.
 
 - **Never open a PR.** Any PR opened against this repo is auto-closed and locked by `.github/workflows/close-prs.yml`.
-- Implement, commit (signed by the maintainer's key), push directly to main. No branches.
-- CI failures on main are top priority. When the latest main commit is failing CI, the next cycle fixes it before anything else.
-- If there is no build CI at all, creating a minimal GitHub Actions workflow (one job: `cargo build && cargo test`) is likely the single highest-value infrastructure change available. Don't wait for perfect CI — start minimal and improve incrementally.
-- External CI failures (dependency outages, upstream breakage) require judgment. Explain reasoning in the changelog.
+- **No branches.** Implement, commit (signed by the maintainer's key), push directly to main. The lathe loop runs in `--direct` mode for this repo precisely because there is nothing to merge.
+- **Build CI:** `.github/workflows/build.yml` runs on every push to main. Its first job is named `build` and runs `cargo build`, `cargo test`, `cargo clippy -- -D warnings`. Downstream jobs (`audit`, `fuzz-smoke`, `e2e`, `bench`) gate on `build` succeeding. The workflow uses no third-party actions — it clones via `git clone` with the runner-issued `GITHUB_TOKEN`, matching `verify-author-signature.yml`.
+- **CI poll path:** After each push, the lathe engine fetches `origin/main`, takes the new HEAD SHA, and polls `GET /repos/<owner>/<repo>/commits/<SHA>/check-runs` filtered to `name == "build"`. The result is in the next cycle's snapshot under `## CI/CD Status`. The default check name is `build`; if you ever rename the job, also update `.lathe/ci-check-name`.
+- **CI failures on main are top priority.** When the latest main commit's `build` check failed, the next cycle fixes it before any new work — same priority as a falsification failure.
+- **External CI failures** (dependency outages, upstream breakage) require judgment. Explain reasoning in the changelog.
 
 ### Reading CI status safely — load-bearing rule
 

@@ -35,25 +35,34 @@ Claims are the load-bearing promises galvanic makes to its stakeholders. The fal
 
 ---
 
+### Claim 4: Build workflow runs on push to main and uses no third-party actions
+
+**Stakeholders:** All — this is the trust substrate for every change the lathe pushes.
+**Promise:** `.github/workflows/build.yml` exists. It triggers on `push` to `branches: [main]`. It contains a job named `build` (the check name the lathe loop polls in direct mode). It contains no `uses:` lines (no third-party actions), matching the convention set by `close-prs.yml` and `verify-author-signature.yml` — source is fetched via `git clone` with the runner-issued `GITHUB_TOKEN`.
+**Why it's load-bearing:** The lathe loop pushes directly to main and decides whether to move on or fix a failure based on this workflow's result. If `build.yml` is missing, mis-triggered (e.g. on `pull_request` instead of `push`), or renames its `build` job, the loop sees no check and the agent has no signal. If a third-party action is added, the "Allow libliflin actions" repo setting can silently block the workflow, also leaving the loop with no signal — and adding supply-chain risk to a workflow that runs with the repo's `GITHUB_TOKEN`.
+**How it's checked:** `falsify.sh` verifies (a) the file exists, (b) it has a `push:` trigger with `branches: [main]`, (c) it declares a job named `build`, and (d) it contains no `uses:` lines.
+
+---
+
 ## Pending Claims (activate when source code exists)
 
 These claims cannot be checked yet because the source code doesn't exist. The runtime agent should activate each claim in `claims.md` and add the corresponding check to `falsify.sh` when the prerequisite code exists.
 
-### Pending Claim 4: Build integrity
+### Pending Claim 5: Build integrity
 **Activate when:** `Cargo.toml` and `src/lib.rs` exist.
 **Promise:** `cargo build` succeeds with no errors and `cargo clippy -- -D warnings` emits no warnings.
 **Stakeholders:** All.
 
 ---
 
-### Pending Claim 5: Test suite passes
+### Pending Claim 6: Test suite passes
 **Activate when:** `tests/` directory and at least one test file exist.
 **Promise:** `cargo test` exits 0.
 **Stakeholders:** FLS conformance researcher, cache researcher, Sunday contributor.
 
 ---
 
-### Pending Claim 6: Token stays 8 bytes
+### Pending Claim 7: Token stays 8 bytes
 **Activate when:** `src/lexer.rs` exists with a `Token` type.
 **Promise:** `size_of::<Token>() == 8` — the lexer's hot-path type fits 8 tokens per 64-byte cache line.
 **Why structural, not documentary:** This claim fails when the struct grows, regardless of what the doc comment says. A doc comment update does not satisfy this claim. See `claims.md` "Adding New Claims" for the structural vs. documentary distinction.
@@ -61,14 +70,14 @@ These claims cannot be checked yet because the source code doesn't exist. The ru
 
 ---
 
-### Pending Claim 7: No unsafe code in library source
+### Pending Claim 8: No unsafe code in library source
 **Activate when:** `src/` exists with more than `main.rs`.
 **Promise:** No `unsafe` blocks, `unsafe fn`, or `unsafe impl` in `src/` (excluding `src/main.rs`).
 **Stakeholders:** Sunday contributor, FLS conformance researcher.
 
 ---
 
-### Pending Claim 8: Runtime instruction emission (no const-fold in non-const functions)
+### Pending Claim 9: Runtime instruction emission (no const-fold in non-const functions)
 **Activate when:** `tests/e2e.rs` exists with an assembly inspection test for basic arithmetic.
 **Promise:** A non-const function that evaluates `1 + 2` emits a runtime `add` instruction, not a folded `mov x0, #3`.
 **Why it's load-bearing:** FLS §6.1.2:37–45 is the heart of the conformance research question. A compiler that constant-folds non-const code looks correct on exit-code tests but is semantically wrong.
@@ -76,7 +85,7 @@ These claims cannot be checked yet because the source code doesn't exist. The ru
 
 ---
 
-### Pending Claim 9: CLI handles adversarial inputs without panicking
+### Pending Claim 10: CLI handles adversarial inputs without panicking
 **Activate when:** `src/main.rs` exists and the project can be built as a binary.
 **Promise:** The galvanic binary does not panic (exit > 128) when given: empty files, binary garbage, NUL bytes, deeply nested braces (500 levels), or large inputs (10k let bindings).
 **Stakeholders:** CI/validation infrastructure, Sunday contributor.

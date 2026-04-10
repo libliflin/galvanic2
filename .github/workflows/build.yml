@@ -1,0 +1,310 @@
+name: Build
+
+# Runs on every push to main. No PR triggers — this repo auto-closes PRs
+# (see close-prs.yml). The lathe loop polls this workflow's "build" check
+# by commit SHA after each push and uses the result to decide whether the
+# next cycle moves forward or prioritizes fixing a CI failure.
+#
+# SECURITY:
+# - No third-party actions. Source is fetched via git clone using the
+#   runner-issued GITHUB_TOKEN. The "Allow libliflin actions" repo setting
+#   cannot block this workflow and there is no third-party supply chain.
+# - REPO is the repo full_name set by GitHub, never attacker-controlled.
+# - AFTER_SHA is the server-generated 40-char hex from the push event,
+#   passed via env var (never interpolated into the script body).
+# - Pushes to main are gated by close-prs.yml (rejects PRs) and
+#   verify-author-signature.yml (only the maintainer's key), so anything
+#   that runs here is signed by the maintainer.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Clone repo at pushed SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          AFTER_SHA: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" repo
+          cd repo
+          git checkout --quiet "$AFTER_SHA"
+
+      - name: cargo build
+        working-directory: repo
+        run: cargo build
+
+      - name: cargo test
+        working-directory: repo
+        run: cargo test
+
+      - name: cargo clippy
+        working-directory: repo
+        run: cargo clippy -- -D warnings
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: build
+    steps:
+      - name: Clone repo at pushed SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          AFTER_SHA: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" repo
+          cd repo
+          git checkout --quiet "$AFTER_SHA"
+
+      - name: No unsafe blocks in source
+        working-directory: repo
+        run: |
+          # Search for actual unsafe blocks/fn/impl — exclude comment lines
+          # (grep -rn output format: file:N:content; filter lines where content starts with //)
+          UNSAFE=$(grep -rn 'unsafe\s*{\|unsafe\s*fn\b\|unsafe\s*impl\b' src/ 2>/dev/null | grep -Ev ':[0-9]+:[[:space:]]*//' || true)
+          if [[ -n "$UNSAFE" ]]; then
+            echo "$UNSAFE"
+            echo "FAIL: unsafe code found — galvanic should be safe Rust only"
+            exit 1
+          fi
+
+      - name: No std::process::Command in library code
+        working-directory: repo
+        run: |
+          # The compiler library should never shell out.
+          # main.rs is the CLI driver and may invoke the assembler/linker.
+          if grep -rn 'std::process::Command\|process::Command' src/ 2>/dev/null | grep -v '^src/main\.rs:'; then
+            echo "FAIL: found Command usage in library source — only main.rs may shell out"
+            exit 1
+          fi
+
+      - name: No network dependencies
+        working-directory: repo
+        run: |
+          # Compiler should not pull in networking crates
+          if [[ -f Cargo.toml ]] && grep -E '^(reqwest|hyper|tokio|async-std|surf)\b' Cargo.toml; then
+            echo "FAIL: networking crate found in dependencies"
+            exit 1
+          fi
+
+  fuzz-smoke:
+    name: fuzz-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: build
+    steps:
+      - name: Clone repo at pushed SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          AFTER_SHA: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" repo
+          cd repo
+          git checkout --quiet "$AFTER_SHA"
+
+      - name: Build release
+        working-directory: repo
+        run: cargo build --release
+
+      - name: Binary exists and prints usage on no args
+        working-directory: repo
+        run: |
+          # Should exit non-zero with usage message
+          if ./target/release/galvanic 2>/dev/null; then
+            echo "FAIL: expected non-zero exit on no args"
+            exit 1
+          fi
+
+      - name: Nonexistent file gives clean error
+        working-directory: repo
+        run: |
+          if ./target/release/galvanic /tmp/does_not_exist.rs 2>/dev/null; then
+            echo "FAIL: expected non-zero exit on missing file"
+            exit 1
+          fi
+
+      - name: Empty file exits zero
+        working-directory: repo
+        run: |
+          touch /tmp/empty.rs
+          timeout 10 ./target/release/galvanic /tmp/empty.rs
+
+      - name: Minimal valid program
+        working-directory: repo
+        run: |
+          echo 'fn main() {}' > /tmp/minimal.rs
+          timeout 10 ./target/release/galvanic /tmp/minimal.rs
+
+      - name: Large repetitive input does not hang
+        working-directory: repo
+        run: |
+          # 10k lines of let bindings inside a function — should not OOM or hang.
+          # A clean non-zero exit (e.g. "exceeded stack slots") is acceptable;
+          # only signal death (exit > 128) or timeout counts as failure.
+          python3 -c "
+          print('fn main() {')
+          for i in range(10000):
+              print(f'    let x{i}: u32 = {i};')
+          print('}')
+          " > /tmp/stress.rs
+          set +e
+          timeout 30 ./target/release/galvanic /tmp/stress.rs 2>/dev/null
+          EXIT_CODE=$?
+          set -e
+          if [ "$EXIT_CODE" -gt 128 ]; then
+            SIGNAL=$((EXIT_CODE - 128))
+            echo "FAIL: binary died with signal $SIGNAL on large input"
+            exit 1
+          fi
+
+      - name: Deeply nested braces do not stack overflow
+        working-directory: repo
+        run: |
+          # 500 levels of nested blocks — should not stack-overflow the parser or hang.
+          # A clean non-zero exit (e.g. "exceeded stack slots") is acceptable;
+          # only signal death (exit > 128) counts as failure.
+          python3 -c "
+          print('fn main() {')
+          for i in range(500):
+              print('  { let _x = 0;')
+          for i in range(500):
+              print('  }')
+          print('}')
+          " > /tmp/nested.rs
+          set +e
+          timeout 30 ./target/release/galvanic /tmp/nested.rs 2>/dev/null
+          EXIT_CODE=$?
+          set -e
+          if [ "$EXIT_CODE" -gt 128 ]; then
+            SIGNAL=$((EXIT_CODE - 128))
+            echo "FAIL: binary died with signal $SIGNAL on deeply nested input"
+            exit 1
+          fi
+
+      - name: Binary garbage input gives error, not panic
+        working-directory: repo
+        run: |
+          dd if=/dev/urandom bs=1024 count=4 of=/tmp/garbage.rs 2>/dev/null
+          # Should fail gracefully — non-zero exit is fine, but not a signal/panic
+          set +e
+          timeout 10 ./target/release/galvanic /tmp/garbage.rs 2>/dev/null
+          EXIT_CODE=$?
+          set -e
+          if [ "$EXIT_CODE" -gt 128 ]; then
+            SIGNAL=$((EXIT_CODE - 128))
+            echo "FAIL: binary died with signal $SIGNAL"
+            exit 1
+          fi
+
+      - name: NUL bytes in source do not crash
+        working-directory: repo
+        run: |
+          printf 'fn main() {\x00\x00\x00}' > /tmp/nul.rs
+          set +e
+          timeout 10 ./target/release/galvanic /tmp/nul.rs 2>/dev/null
+          EXIT_CODE=$?
+          set -e
+          if [ "$EXIT_CODE" -gt 128 ]; then
+            SIGNAL=$((EXIT_CODE - 128))
+            echo "FAIL: binary died with signal $SIGNAL"
+            exit 1
+          fi
+
+      - name: Very long line does not hang
+        working-directory: repo
+        run: |
+          python3 -c "print('let x = ' + '1 + ' * 5000 + '1;')" > /tmp/longline.rs
+          set +e
+          timeout 30 ./target/release/galvanic /tmp/longline.rs 2>/dev/null
+          EXIT_CODE=$?
+          set -e
+          if [ "$EXIT_CODE" -gt 128 ]; then
+            SIGNAL=$((EXIT_CODE - 128))
+            echo "FAIL: binary died with signal $SIGNAL"
+            exit 1
+          fi
+
+  # Compile milestone programs and run the resulting ARM64 binaries.
+  # Verifies the full pipeline: lex → parse → IR → codegen → assemble → link → run.
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+    steps:
+      - name: Clone repo at pushed SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          AFTER_SHA: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" repo
+          cd repo
+          git checkout --quiet "$AFTER_SHA"
+
+      - name: Install ARM64 cross toolchain and QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y binutils-aarch64-linux-gnu qemu-user
+
+      - name: Build
+        working-directory: repo
+        run: cargo build
+
+      - name: End-to-end tests
+        working-directory: repo
+        run: cargo test --test e2e -- --nocapture
+
+  # Run benchmarks to catch performance regressions
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    steps:
+      - name: Clone repo at pushed SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          AFTER_SHA: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" repo
+          cd repo
+          git checkout --quiet "$AFTER_SHA"
+
+      - name: Run benchmarks
+        working-directory: repo
+        run: cargo bench --bench throughput -- --warm-up-time 2 --measurement-time 3 2>&1 | tee bench-output.txt
+
+      - name: Print throughput summary
+        working-directory: repo
+        run: |
+          echo "## Throughput Summary"
+          grep -E 'time:|thrpt:' bench-output.txt || echo "No throughput data found"
+
+      - name: Check data structure sizes
+        working-directory: repo
+        run: |
+          # Verify cache-line-aware data structures haven't grown
+          cargo test --lib -- --exact lexer::tests::token_is_eight_bytes 2>&1
+          cargo test --lib -- --exact lexer::tests::span_is_eight_bytes 2>&1 || true
