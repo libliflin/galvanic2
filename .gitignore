@@ -1,3 +1,6 @@
 
 # Lathe session state (ephemeral, engine-managed)
 .lathe/session/
+
+# Cargo build output
+/target/
