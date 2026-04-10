@@ -12,18 +12,36 @@ Tests the binary as a black box. Uses `std::process::Command` to run the `galvan
 
 **When to add here:** When testing CLI behavior — usage errors, file-not-found, the "galvanic: compiling" output, basic CLI flag parsing.
 
-**Pattern:**
+**Pattern (std-only — galvanic has no dev-dep on tempfile):**
 ```rust
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Per-test unique scratch path. The counter prevents collisions when several
+// tests run in parallel within the same process.
+fn scratch_rs(tag: &str) -> std::path::PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "galvanic-{pid}-{tag}-{n}.rs",
+        pid = std::process::id()
+    ))
+}
+
 #[test]
 fn empty_file_exits_zero() {
-    let empty = tempfile::NamedTempFile::with_suffix(".rs").unwrap();
+    let path = scratch_rs("empty");
+    std::fs::write(&path, "").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_galvanic"))
-        .arg(empty.path())
+        .arg(&path)
         .output()
         .expect("failed to run galvanic");
+    let _ = std::fs::remove_file(&path);
     assert!(output.status.success());
 }
 ```
+
+The four-line `scratch_rs` helper is the std replacement for `tempfile::NamedTempFile`. Inline it the first time you need it; once two test files use it, lift it into a `tests/common/mod.rs`.
 
 ---
 

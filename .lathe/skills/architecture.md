@@ -16,7 +16,7 @@ source text
     → aarch64-linux-gnu-ld     → ELF binary
 ```
 
-The CLI driver goes in `src/main.rs`. The library in `src/lib.rs` (pub mod for all phases). The library should have no runtime dependencies — `tempfile` and `criterion` are dev-only.
+The CLI driver goes in `src/main.rs`. The library in `src/lib.rs` (pub mod for all phases). The library should have no runtime dependencies, and the project deliberately has no dev-dependencies either — see "Cargo.toml Structure" below for the rationale.
 
 **Current state:** No source files exist. The pipeline needs to be built from scratch, milestone by milestone.
 
@@ -28,26 +28,20 @@ The CLI driver goes in `src/main.rs`. The library in `src/lib.rs` (pub mod for a
 [package]
 name = "galvanic"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+description = "Clean-room ARM64 Rust compiler built from the Ferrocene Language Specification with cache-line-aware codegen"
+license = "MIT"
 
-[[bin]]
-name = "galvanic"
-path = "src/main.rs"
-
-[lib]
-name = "galvanic"
-path = "src/lib.rs"
+[dependencies]
 
 [dev-dependencies]
-tempfile = "3"
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "throughput"
-harness = false
 ```
 
-No runtime `[dependencies]`. No `std` exceptions — galvanic implements `no_std` core Rust. The binary (`src/main.rs`) may use `std` for file I/O and process spawning; the library (`src/lib.rs`) should not.
+**Zero runtime deps, zero dev-deps.** This is the load-bearing version of the clean-room thesis: a contributor running `cargo build` pulls down only the standard library and whatever crates `std` itself transitively requires. There are no proc macros from third parties, no build scripts from third parties, no compile-time RCE surface beyond the toolchain itself.
+
+History: tempfile and criterion were the original dev-deps inherited from galvanic. They were dropped in two cycles: criterion when the throughput bench was tossed (no hot path to measure yet), tempfile when the four-line `std::env::temp_dir() + std::process::id()` pattern proved sufficient for scratch-file tests. If you find yourself reaching for a dev-dep, first check whether the std equivalent is twenty lines you can own — that is almost always the right call here. When it isn't, write down *why* in the commit message that adds the dep, so the next cycle can challenge it.
+
+No `std` exceptions — galvanic implements `no_std` core Rust. The binary (`src/main.rs`) may use `std` for file I/O and process spawning; the library (`src/lib.rs`) should not.
 
 ---
 
