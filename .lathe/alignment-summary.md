@@ -8,18 +8,18 @@
 
 - **William as FLS conformance researcher** — testing whether the Ferrocene Language Specification is independently implementable, milestone by milestone, with every decision traceable to a `FLS §X.Y` citation and no rustc-internal knowledge.
 - **William as cache-aware codegen researcher** — testing what a compiler looks like when cache-line alignment is a first-class structural constraint from the start, not an optimization pass at the end.
-- **The Sunday contributor** — someone who finds this interesting and wants to add a FLS section; needs clear testing patterns and a clear map of what's done.
-- **CI/validation infrastructure** — the trust substrate; galvanic has solid CI (build, clippy, fuzz-smoke, audit, e2e with QEMU, bench). The lathe's work is only as trustworthy as the CI that validates it.
+- **The Sunday contributor** — someone who finds this interesting and wants to add a FLS section; needs `cargo build` to work and clear testing patterns to follow.
+- **CI/validation infrastructure** — the trust substrate. Currently only two security workflows exist (no build CI). The lathe's work is only as trustworthy as the CI that validates it.
 
 ---
 
 ## Key Tensions
 
-- **Parser coverage vs. codegen coverage:** The parser is far ahead of the codegen. `fls_fixtures.rs` covers many FLS constructs that `e2e.rs` doesn't yet compile. The agent favors codegen progress over expanding parse acceptance — confirmed by the project's milestone-based trajectory.
+- **Bootstrapping velocity vs. design discipline:** Getting to milestone 1 quickly vs. not making early decisions that paint the project into a corner. Resolved by following the proven architecture from `.lathe/skills/architecture.md` rather than inventing a new one.
 
-- **FLS fidelity vs. convenience:** The whole value of the project is the discipline (spec-only, no rustc cheating). The agent should never take a convenient path that papers over a spec ambiguity. Fidelity wins.
+- **FLS fidelity vs. convenience:** The whole value of the project is spec-only discipline (no rustc cheating). The agent must never take a convenient path that papers over a spec ambiguity. See `.lathe/refs/fls-constraints.md`.
 
-- **Cache-line documentation vs. enforcement:** There are more cache-line doc comments than size assertions. The agent should add `size_of` assertions for types with explicit budgets, but should not add claims it can't actually enforce. The `Token` size claim is structural and enforced; the IR instruction notes are currently aspirational and documented as such.
+- **Cache-line documentation vs. enforcement:** `size_of` assertions enforce the structural promise; doc comments don't. Add assertions only for types that actually have a budget claim. Aspirational comments are fine but don't make them claims.
 
 ---
 
@@ -27,43 +27,57 @@
 
 These are the promises encoded in `.lathe/claims.md` and checked every cycle by `falsify.sh`:
 
-1. **Build integrity** — `cargo build` and `cargo clippy -- -D warnings` succeed.
-2. **Test suite passes** — `cargo test` exits 0.
-3. **Token is 8 bytes** — `size_of::<Token>() == 8`, enforced via `lexer::tests::token_is_eight_bytes`.
-4. **No unsafe in library source** — grep check on `src/` excluding `main.rs`.
-5. **Runtime instruction emission** — `fn main() -> i32 { 1 + 2 }` emits a runtime `add`, not `mov x0, #3` (FLS §6.1.2:37–45 compliance proxy).
-6. **CLI handles adversarial inputs** — empty files, binary garbage, NUL bytes, deeply nested braces don't crash the binary (exit > 128).
+**Active (checkable now):**
+1. **PR-rejection workflow is intact** — `.github/workflows/close-prs.yml` exists, uses `pull_request_target`, and does not check out PR head code. This is a safety invariant — the workflow runs with base-repo write tokens.
+2. **Author-signature verification is active** — `.github/workflows/verify-author-signature.yml` exists and contains `git verify-commit` logic with the maintainer's SSH key.
+
+**Pending (activate as source code is built):**
+3. **Build integrity** — `cargo build` and `cargo clippy -- -D warnings` succeed. *(activate when Cargo.toml + src/ exist)*
+4. **Test suite passes** — `cargo test` exits 0. *(activate when tests/ exists)*
+5. **Token is 8 bytes** — `size_of::<Token>() == 8`. *(activate when src/lexer.rs has Token)*
+6. **No unsafe in library source** — grep check on `src/`. *(activate when library code exists)*
+7. **Runtime instruction emission** — `fn main() -> i32 { 1 + 2 }` emits `add`, not `mov x0, #3`. *(activate when tests/e2e.rs has the assembly inspection test)*
+8. **CLI handles adversarial inputs** — no panic on empty file, binary garbage, etc. *(activate when galvanic binary exists)*
 
 ---
 
 ## Current Focus
 
-Galvanic is at milestone 197 (`for x in &mut slice`). The project is advancing through FLS §6.15.1 (for loops with various iterator patterns) and §4.9 (slice/reference types). The agent should continue at this frontier — implementing the next uncovered FLS section that the parser already handles but the codegen doesn't yet fully support.
+The project is at **Stage 0: blank slate**. No `Cargo.toml`, no source files, no tests, no build CI.
 
-The assembly inspection tests lag the milestone tests. When adding new milestones, always add both exit-code tests AND assembly inspection tests for any new runtime instruction patterns.
+The agent's first priority cycle should be creating the `Cargo.toml` and `src/` scaffold. The second should be creating a minimal GitHub Actions `build` job (`cargo build && cargo test`). Everything else follows.
+
+The proven architecture to build toward is documented in `.lathe/skills/architecture.md`. Build it exactly — don't redesign it.
+
+---
+
+## Repository Security
+
+- This repo uses `pull_request_target` in `close-prs.yml`. The workflow is written safely (no checkout of PR head), and Claim 1 verifies this every cycle.
+- The repo is at `libliflin/galvanic2`. If it's public, the injection surface is higher (external contributors can file issues with injected text) — but the lathe engine only reads structured data from GitHub, not free-text fields.
+- Branch protection status was not verified during init. Before starting cycles, check that the `main` branch requires commit signatures (the `verify-author-signature.yml` workflow enforces this at the CI level, but the ruleset setting should also be on).
 
 ---
 
 ## What Could Be Wrong
 
-**Falsify.sh not verified to run to completion.** The init sandbox could not execute `cargo` or `bash` commands, so `falsify.sh` was not run to confirm the summary line appears. Before starting cycles, you should run:
+**`falsify.sh` was not executed during init.** The init environment blocked `chmod` and `bash` execution. The script's logic was reviewed manually:
+- All `grep` calls are inside `if grep -q` patterns, which safely capture exit codes and cannot trigger `pipefail`.
+- No `grep` calls appear in pipelines.
+- The summary line (`=== Summary === passed: N  failed: M`) is at the end.
+- The script should run cleanly, but you should verify before starting cycles:
+  ```bash
+  chmod +x .lathe/falsify.sh
+  bash .lathe/falsify.sh
+  ```
+  Confirm the output ends with `=== Summary === passed: 5  failed: 0` (or close to it).
 
-```bash
-cd /Users/williamlaffin/code/galvanic
-chmod +x .lathe/falsify.sh
-bash .lathe/falsify.sh
-```
+**This is a reinit of a compromised repo.** The `.lathe-bku/` directory contains the old lathe files from the original `galvanic` repo (at milestone 197, with 1700+ tests and a full pipeline). Those files describe the target end state, not the current state. The agent should NOT assume that code described in `.lathe-bku/` exists in this repo — it doesn't. Read the actual file system.
 
-Confirm the output ends with `=== Summary === passed: N  failed: M`. If it dies silently before that line, the most likely cause is a `grep` command returning exit code 1 (no matches) under `pipefail`. The script uses `|| true` guards on all grep invocations, but if bash is bailing earlier check for unbound variables or syntax errors.
+**No source code means no research is happening yet.** The first ~5 cycles are pure infrastructure (Cargo.toml, src/ scaffold, CI). This is necessary but does not advance the FLS conformance or cache research questions directly. William may want to speed through this phase.
 
-**Claim 2 (test suite passes) is not in falsify.sh.** Running the full `cargo test` suite every cycle would take 2-5 minutes and is already done by snapshot.sh. The falsify.sh omits it and relies on snapshot output + CI for full test coverage. If you want it in the falsification loop, add a targeted run like `cargo test --lib` (fast) rather than the full suite.
+**Workflow files lack a CI job for the project itself.** The only CI today is the two security workflows. Adding `ci.yml` with a build job is high priority but must be done as a signed commit directly to main (the repo rejects PRs).
 
-**Branch protection not verified.** I couldn't check whether the default branch on GitHub has protection rules (require PR reviews, restrict direct push). For autonomous operation, branch protection on `main` is important. Check repo settings and enable "Require a pull request before merging" if not already set.
+**The `snapshot.sh` now runs `cargo build` and `cargo test` on every cycle.** These will print "skipped — no Cargo.toml" until the project is initialized, then they will run on every snapshot. If the full test suite grows large, the snapshot will slow down. Consider switching `cargo test` in snapshot.sh to `cargo test --lib` (fast unit tests only) and leaving the full test run to CI once the suite is substantial.
 
-**Repo visibility not confirmed.** The README doesn't state whether the repo is public or private. If it's public (`libliflin/galvanic`), external contributors can file issues and PRs with injected text. The lathe engine only consumes structured data from GitHub (status codes, PR numbers), not free-text fields, so injection risk is low — but worth knowing.
-
-**The e2e test (Claim 5) requires the build to succeed first.** `cargo test --test e2e -- --exact runtime_add_emits_add_instruction` will fail if `cargo build` failed first. The falsify.sh runs build first and stops if it fails, so this ordering is correct — but note that the $FAIL count could cascade if build fails.
-
-**Milestones 102, 107, 128, 141, 146, 158, 171-173, 175-179, 191 are skipped.** The e2e.rs milestone numbering has gaps. This is normal — milestone numbers were retired or reassigned. It's not a bug to investigate.
-
-**The "Sunday contributor" claim is aspirational.** I couldn't find a `CONTRIBUTING.md` or a clear "what's next" document. The Sunday contributor's journey depends on being able to find the next uncovered FLS section. The agent could improve this by adding a brief "where we are / what's next" section to the README, but that's a future cycle.
+**The Sunday contributor stakeholder is aspirational.** There's no `CONTRIBUTING.md` and no "what's next" map. Once the first few milestones are done, adding a brief "current milestone / what comes next" section to the README would substantially improve this stakeholder's journey.

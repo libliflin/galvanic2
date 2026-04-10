@@ -8,7 +8,7 @@
 
 ### Layer 1: `tests/smoke.rs` — CLI Smoke Tests
 
-Tests the binary as a black box. Uses `std::process::Command` to run the `galvanic` binary, checks exit codes and stdout text.
+Tests the binary as a black box. Uses `std::process::Command` to run `galvanic` binary, checks exit codes and stdout text.
 
 **When to add here:** When testing CLI behavior — usage errors, file-not-found, the "galvanic: compiling" output, basic CLI flag parsing.
 
@@ -24,8 +24,6 @@ fn empty_file_exits_zero() {
     assert!(output.status.success());
 }
 ```
-
----
 
 ### Layer 2: `tests/fls_fixtures.rs` — Parse Acceptance Tests
 
@@ -43,11 +41,9 @@ fn fls_X_Y_description() {
 
 **Important:** A passing `fls_fixtures` test does NOT mean the feature compiles. It only means it parses. Do not cite a `fls_fixtures` test as evidence that a FLS feature is implemented.
 
----
-
 ### Layer 3: `tests/e2e.rs` — Full Pipeline Tests
 
-The main test suite. Two sub-patterns within this file:
+The main test suite. Over 1700 tests. Two sub-patterns within this file:
 
 #### 3a. Assembly Inspection (no external tools required)
 
@@ -130,7 +126,6 @@ fn milestone_N_name() { ... }
 - `tests/fixtures/fls_X_Y_description.rs` — source programs drawn from FLS §X.Y examples
 - `tests/fixtures/fls_X_Y_description.s` — expected ARM64 assembly output (present for some milestones)
 - Fixture programs should be minimal: just enough to exercise the construct, no more.
-- Programs must be derived from the FLS, not invented. If the spec doesn't provide an example, note that in the fixture comment.
 
 ---
 
@@ -154,4 +149,3 @@ When adding a new FLS milestone to `e2e.rs`:
 - **Adding to `fls_fixtures.rs` and claiming the feature is implemented.** Parse acceptance is not implementation.
 - **Using `compile_and_run` for assembly inspection.** Use `compile_to_asm` instead — it's simpler, faster, and works on macOS.
 - **Not self-guarding `compile_and_run` tests.** Always use `let Some(exit_code) = compile_and_run(...) else { return; }`.
-- **Skipping the FLS citation.** Every test needs a `FLS §X.Y` reference. If you can't find one, the feature may not be in scope.

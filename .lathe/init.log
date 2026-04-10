@@ -1,0 +1,19 @@
+All files are in place. Here's a summary of what was written and why each decision was made:
+
+---
+
+## What was produced
+
+**`.lathe/agent.md`** — Runtime agent instructions built around three real stakeholders plus the CI/validation trust substrate. Deliberately does not encode a priority ladder — the falsification suite is the floor, and above that the agent ranks by stakeholder impact each cycle. The "What Matters Now" section honestly reflects Stage 0 (blank slate), with questions that will evolve as the project grows.
+
+**`.lathe/claims.md`** — Two active claims (both about security workflow integrity, which are checkable right now) and six pending claims (build, tests, Token size, no unsafe, runtime instruction emission, adversarial input handling) that activate as source code is built. The structural vs. documentary distinction is called out explicitly.
+
+**`.lathe/falsify.sh`** — Checks the two active claims. All `grep` calls are in `if grep -q` patterns (safe under `pipefail`). Ends with the required `=== Summary ===` line. Pending claims are listed as comments with activation instructions. **Note: `chmod +x` was blocked by the session permission mode — verify execution before starting cycles.**
+
+**`.lathe/skills/architecture.md`** — The proven pipeline architecture from the original repo, reframed as "what to build toward" rather than "what exists now." Includes Cargo.toml structure, ABI decisions, IR design, test layers, and the target CI structure.
+
+**`.lathe/skills/testing.md`** — The three-layer test system (smoke / fls_fixtures / e2e) with patterns and the critical warning that parse-acceptance is not implementation.
+
+**`.lathe/snapshot.sh`** — Replaced the generic template with a project-specific snapshot that conditionally runs `cargo build`, `cargo test`, `cargo clippy`, and counts milestones when the project exists, while gracefully skipping when there's no `Cargo.toml` yet.
+
+**`.lathe/alignment-summary.md`** — Read this first. Key flags: `falsify.sh` was not run during init (verify it manually), the `.lathe-bku/` files describe the target end state not the current state, and there's no build CI yet (that's an early high-priority cycle).

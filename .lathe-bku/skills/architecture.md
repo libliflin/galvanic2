@@ -1,10 +1,10 @@
 # Architecture
 
-*Why this exists: the runtime agent needs to understand the target pipeline and major design decisions to make good implementation choices. This is not a language reference — it's what you can't derive from a quick read of the code, plus the proven architecture from the original galvanic repo.*
+*Why this exists: the runtime agent needs to understand the pipeline and major design decisions to make good implementation choices. This is not a language reference — it's what you can't derive from a quick read of the code.*
 
 ---
 
-## Target Pipeline
+## Pipeline
 
 ```
 source text
@@ -16,38 +16,7 @@ source text
     → aarch64-linux-gnu-ld     → ELF binary
 ```
 
-The CLI driver goes in `src/main.rs`. The library in `src/lib.rs` (pub mod for all phases). The library should have no runtime dependencies — `tempfile` and `criterion` are dev-only.
-
-**Current state:** No source files exist. The pipeline needs to be built from scratch, milestone by milestone.
-
----
-
-## Cargo.toml Structure
-
-```toml
-[package]
-name = "galvanic"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "galvanic"
-path = "src/main.rs"
-
-[lib]
-name = "galvanic"
-path = "src/lib.rs"
-
-[dev-dependencies]
-tempfile = "3"
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "throughput"
-harness = false
-```
-
-No runtime `[dependencies]`. No `std` exceptions — galvanic implements `no_std` core Rust. The binary (`src/main.rs`) may use `std` for file I/O and process spawning; the library (`src/lib.rs`) should not.
+The CLI driver is `src/main.rs`. The library is `src/lib.rs` (pub mod for all phases). The library has no runtime dependencies — `tempfile` and `criterion` are dev-only.
 
 ---
 
@@ -65,15 +34,15 @@ Consequences:
 
 ## IR Design
 
-`src/ir.rs` should contain:
+`src/ir.rs` contains:
 - `Module` — top-level compilation unit (functions, statics, trampolines, vtable shims, vtables)
 - `IrFn` — a function: name, parameters, return type, instruction list, stack slot count
 - `Instr` — one instruction (enum: `LoadImm`, `BinOp`, `Store`, `Load`, `Ret`, `Branch`, `Call`, etc.)
 - `IrValue` — a value reference (register, stack slot, immediate)
 
-The IR is minimal. Nothing is added until the next milestone needs it.
+The IR is minimal and grows milestone by milestone. Nothing is added until the next milestone needs it.
 
-**Cache-line design:** Every type in `ir.rs` should carry a cache-line note documenting its size and how many fit per 64-byte line. For types with explicit budgets, add a `size_of` assertion. Notes that are aspirational (no assertion yet) are still valuable documentation — but don't confuse them with enforced claims.
+**Cache-line design:** Every type in `ir.rs` carries a cache-line note documenting its size and how many fit per 64-byte line. These notes are currently aspirational for the IR (the instruction set is growing) but structural for `Token` (8 bytes, enforced by test).
 
 **Stack layout:** Each function allocates a fixed stack frame at entry (`sub sp, sp, #N`) large enough for all local variables. Stack slots are assigned by index (slot 0, slot 1, ...) during lowering.
 
@@ -85,7 +54,7 @@ This is the most critical architectural constraint. See `.lathe/refs/fls-constra
 
 The summary: a regular `fn` body (including `fn main`) is NOT a const context. Even if every value is a compile-time constant, the compiler must emit runtime ARM64 instructions. The litmus test: if swapping a literal for a function parameter would break the implementation, it's an interpreter, not a compiler.
 
-**Assembly inspection tests** exist in `tests/e2e.rs` specifically to catch const-fold violations. When adding a new arithmetic or control-flow feature, add both an exit-code test AND an assembly inspection test.
+**Assembly inspection tests** exist in `tests/e2e.rs` (starting around line 396) specifically to catch const-fold violations. When adding a new arithmetic or control-flow feature, add both an exit-code test AND an assembly inspection test.
 
 ---
 
@@ -93,7 +62,7 @@ The summary: a regular `fn` body (including `fn main`) is NOT a const context. E
 
 Three distinct test layers. Keep them separate — mixing them hides what's actually been implemented:
 
-1. **`tests/smoke.rs`** — CLI smoke test. Runs the binary, checks exit codes and stdout. No library internals.
+1. **`tests/smoke.rs`** — CLI smoke test. Runs the binary binary, checks exit codes and stdout. No library internals.
 
 2. **`tests/fls_fixtures.rs`** — Parse acceptance. Calls `lexer::tokenize` + `parser::parse` on fixture files in `tests/fixtures/`. A passing test here means "galvanic can lex and parse this FLS construct" — NOT that it can compile or run it.
 
@@ -103,17 +72,25 @@ Three distinct test layers. Keep them separate — mixing them hides what's actu
 
 ---
 
-## CI Structure (Target)
+## Fixture Files
 
-Five CI jobs in `.github/workflows/ci.yml`:
+`tests/fixtures/` contains `.rs` files and paired `.s` files (expected assembly for some). The `.rs` files are real Rust programs drawn from FLS examples. The `.s` files are reference assembly outputs for specific milestones.
 
-- **`build`**: `cargo build` + `cargo test` + `cargo clippy -- -D warnings`. Runs on every push to main.
+Fixture file naming: `fls_X_Y_description.rs` where `X.Y` is the FLS section number.
+
+---
+
+## CI Structure
+
+Five CI jobs (`.github/workflows/ci.yml`):
+
+- **`build`**: `cargo build` + `cargo test` + `cargo clippy -- -D warnings`. Runs on every push/PR.
 - **`fuzz-smoke`**: Adversarial CLI inputs (large inputs, NUL bytes, binary garbage, deeply nested braces). Tests that the compiler doesn't panic, hang, or crash on malformed input.
 - **`audit`**: Grep-based invariant checks. No `unsafe` blocks in library code. No `std::process::Command` in library code (only `main.rs` may shell out). No networking crates.
 - **`e2e`**: Installs `binutils-aarch64-linux-gnu` + `qemu-user` on `ubuntu-latest`, runs `cargo test --test e2e`. Full-pipeline tests including actual ARM64 execution.
-- **`bench`**: `cargo bench` + `token_is_eight_bytes` size check.
+- **`bench`**: `cargo bench` + the `token_is_eight_bytes` size check.
 
-**Current state:** No CI for the project itself. Only security workflows exist. Creating the `build` job is a high-priority early cycle — it's the trust substrate that makes every subsequent change verifiable.
+The `e2e` and `fuzz-smoke` jobs depend on `build` (run in parallel after build passes).
 
 ---
 
@@ -127,11 +104,3 @@ A typical new milestone adds:
 5. FLS citations in all of the above: `FLS §X.Y` in comments and doc comments
 
 If a milestone introduces a new type with a performance claim, a `size_of` test or static assertion may also be warranted.
-
----
-
-## Fixture Files
-
-`tests/fixtures/` contains `.rs` files and paired `.s` files (expected assembly for some). The `.rs` files are real Rust programs drawn from FLS examples. The `.s` files are reference assembly outputs for specific milestones.
-
-Fixture file naming: `fls_X_Y_description.rs` where `X.Y` is the FLS section number.
