@@ -1,0 +1,66 @@
+name: Verify author signature
+
+# Runs on every push to main. Verifies that every commit in the pushed range
+# is signed by the maintainer's specific SSH key. The required-signatures
+# ruleset rule only checks "some valid signature" — this workflow tightens
+# that to "signed by exactly this key, and no other".
+#
+# The author key is hardcoded here, not read from a file in the repo, so
+# it cannot be modified by anything except a signed commit changing this
+# file (which itself goes through this same check on the next push).
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: All commits signed by author key
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify all pushed commits
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.event.after }}
+          AUTHOR_KEY: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJxNEEmGq5ScUmRi/mQcsKWutXLIebGcuy4BJOe2/3Nv william.laffin@gmail.com"
+          AUTHOR_PRINCIPAL: "william.laffin@gmail.com"
+        run: |
+          set -euo pipefail
+
+          ALLOWED_SIGNERS="$(mktemp)"
+          printf '%s %s\n' "$AUTHOR_PRINCIPAL" "$AUTHOR_KEY" > "$ALLOWED_SIGNERS"
+
+          git config gpg.format ssh
+          git config gpg.ssh.allowedSignersFile "$ALLOWED_SIGNERS"
+
+          if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            COMMITS="$AFTER_SHA"
+          else
+            COMMITS="$(git log --format=%H "$BEFORE_SHA..$AFTER_SHA")"
+          fi
+
+          if [ -z "$COMMITS" ]; then
+            echo "No new commits in push range."
+            exit 0
+          fi
+
+          fail=0
+          for sha in $COMMITS; do
+            echo "::group::Checking $sha"
+            if git verify-commit "$sha" 2>&1; then
+              echo "OK"
+            else
+              echo "::error::Commit $sha is not signed by the author key"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+
+          exit $fail

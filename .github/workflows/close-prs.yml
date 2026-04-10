@@ -1,0 +1,45 @@
+name: Auto-close PRs
+
+# This repository does not accept pull requests. All changes are pushed
+# directly to main as signed commits by the maintainer.
+#
+# SECURITY: This workflow uses pull_request_target, which runs in the context
+# of the base repository with access to write tokens. It MUST NOT check out
+# the PR head or execute any code from the PR. It only calls the GitHub API
+# to comment, close, and lock the PR. PR-controlled values are passed as
+# JavaScript objects via github-script, never interpolated into a shell.
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: 'This repository does not accept pull requests. All changes are pushed directly to `main` as signed commits by the maintainer. Closed and locked automatically.'
+            });
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              state: 'closed'
+            });
+            await github.rest.issues.lock({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              lock_reason: 'off-topic'
+            });
